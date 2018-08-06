@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
     parser.add_argument("--num-units", type=int, default=64, help="number of units in the mlp")
     # Checkpointing
-    parser.add_argument("--exp-name", type=str, default=None, help="name of the experiment")
+    parser.add_argument("--exp-name", type=str, default="Experiment", help="name of the experiment")
     parser.add_argument("--save-dir", type=str, default="/tmp/policy/", help="directory in which training state and model should be saved")
     parser.add_argument("--save-rate", type=int, default=1000, help="save model once every time this many episodes are completed")
     parser.add_argument("--load-dir", type=str, default="", help="directory in which training state and model are loaded")
@@ -53,11 +53,18 @@ def make_env(scenario_name, arglist, benchmark=False):
     scenario = scenarios.load(scenario_name + ".py").Scenario()
     # create world
     world = scenario.make_world()
+
+    # check if done function exists
+    try:
+        done_cb = scenario.done
+    except:
+        done_cb = lambda agent, world: False
+ 
     # create multiagent environment
     if benchmark:
-        env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation, scenario.benchmark_data)
+        env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation, scenario.benchmark_data, done_cb)
     else:
-        env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation)
+        env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation, done_callback = done_cb)
     return env
 
 def get_trainers(env, num_adversaries, obs_shape_n, arglist):
@@ -149,7 +156,7 @@ def train(arglist):
 
             # for displaying learned policies
             if arglist.display:
-                time.sleep(0.1)
+                #time.sleep(0.05)
                 env.render()
                 continue
 
