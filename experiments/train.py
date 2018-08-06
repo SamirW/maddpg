@@ -122,6 +122,7 @@ def train(arglist):
             new_obs_n, rew_n, done_n, info_n = env.step(action_n)
             episode_step += 1
             done = all(done_n)
+
             terminal = (episode_step >= arglist.max_episode_len)
             # collect experience
             for i, agent in enumerate(trainers):
@@ -169,7 +170,7 @@ def train(arglist):
                 loss = agent.update(trainers, train_step)
 
             # save model, display training output
-            if terminal and (len(episode_rewards) % arglist.save_rate == 0):
+            if (done or terminal) and (len(episode_rewards) % arglist.save_rate == 0):
                 U.save_state(arglist.save_dir, saver=saver)
                 # print statement depends on whether or not there are adversaries
                 if num_adversaries == 0:
@@ -187,14 +188,12 @@ def train(arglist):
 
             # saves final episode reward for plotting training curve later
             if len(episode_rewards) > arglist.num_episodes:
+                if not os.path.exists(arglist.plots_dir):
+                    os.makedirs(arglist.plots_dir)
                 rew_file_name = arglist.plots_dir + arglist.exp_name + '_rewards.pkl'
-                if not os.path.exists(rew_file_name):
-                    os.makedirs(rew_file_name)
                 with open(rew_file_name, 'wb') as fp:
                     pickle.dump(final_ep_rewards, fp)
                 agrew_file_name = arglist.plots_dir + arglist.exp_name + '_agrewards.pkl'
-                if not os.path.exists(agrew_file_name):
-                    os.makedirs(agrew_file_name)
                 with open(agrew_file_name, 'wb') as fp:
                     pickle.dump(final_ep_ag_rewards, fp)
                 print('...Finished total of {} episodes.'.format(len(episode_rewards)))
