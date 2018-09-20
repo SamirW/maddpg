@@ -8,25 +8,28 @@ import os
 import maddpg.common.tf_util as U
 from maddpg.trainer.maddpg import MADDPGAgentTrainer
 import tensorflow.contrib.layers as layers
+from tensorboardX import SummaryWriter
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
-    parser.add_argument("--scenario", type=str, default="simple", help="name of the scenario script")
+    parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
     parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--num-episodes", type=int, default=60000, help="number of episodes")
     parser.add_argument("--num-adversaries", type=int, default=0, help="number of adversaries")
     parser.add_argument("--good-policy", type=str, default="maddpg", help="policy for good agents")
     parser.add_argument("--adv-policy", type=str, default="maddpg", help="policy of adversaries")
+    parser.add_argument("--num-agents", type=int, default=2, help="number of good agents")
     # Core training parameters
     parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
     parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
     parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
     parser.add_argument("--num-units", type=int, default=64, help="number of units in the mlp")
+    parser.add_argument("--seed", type=int, default=256587412, help="random seed")
     # Checkpointing
     parser.add_argument("--exp-name", type=str, default="Experiment", help="name of the experiment")
     parser.add_argument("--save-dir", type=str, default="/tmp/policy/", help="directory in which training state and model should be saved")
-    parser.add_argument("--save-rate", type=int, default=1000, help="save model once every time this many episodes are completed")
+    parser.add_argument("--save-rate", type=int, default=100, help="save model once every time this many episodes are completed")
     parser.add_argument("--load-dir", type=str, default="", help="directory in which training state and model are loaded")
     # Evaluation
     parser.add_argument("--restore", action="store_true", default=False)
@@ -46,14 +49,14 @@ def mlp_model(input, num_outputs, scope, reuse=False, num_units=64, rnn_cell=Non
         out = layers.fully_connected(out, num_outputs=num_outputs, activation_fn=None)
         return out
 
-def make_env(scenario_name, arglist, benchmark=False):
+def make_env(scenario_name, arglist, benchmark=False, agent_size=0.1):
     from multiagent.environment import MultiAgentEnv
     import multiagent.scenarios as scenarios
 
     # load scenario from script
     scenario = scenarios.load(scenario_name + ".py").Scenario()
     # create world
-    world = scenario.make_world()
+    world = scenario.make_world(num_agents=arglist.num_agents, agent_size=agent_size)
 
     # check if done function exists
     try:
@@ -86,7 +89,12 @@ def get_trainers(env, num_adversaries, obs_shape_n, arglist):
 def train(arglist):
     with U.single_threaded_session():
         # Create environment
-        env = make_env(arglist.scenario, arglist, arglist.benchmark)
+        env = make_env(arglist.scenario, arglist, arglist.benchmark, agent_size=0.1)
+        # Set random seeds
+            # Set random seeds
+        env.seed(arglist.seed)
+        np.random.seed(arglist.seed)
+        tf.set_random_seed(arglist.seed)
         # Create agent trainers
         obs_shape_n = [env.observation_space[i].shape for i in range(env.n)]
         num_adversaries = min(env.n, arglist.num_adversaries)
@@ -102,6 +110,11 @@ def train(arglist):
         if arglist.display or arglist.restore or arglist.benchmark:
             print('Loading previous state...')
             U.load_state(arglist.load_dir)
+
+        if not arglist.display:
+            # Create SummaryWriter
+            logdir = os.path.join(arglist.save_dir,arglist.exp_name)
+            writer = SummaryWriter(logdir)
 
         episode_rewards = [0.0]  # sum of rewards for all agents
         agent_rewards = [[0.0] for _ in range(env.n)]  # individual agent reward
@@ -121,7 +134,8 @@ def train(arglist):
             # environment step
             new_obs_n, rew_n, done_n, info_n = env.step(action_n)
             episode_step += 1
-            done = all(done_n)
+            # done = all(done_n)
+            done = False
 
             terminal = (episode_step >= arglist.max_episode_len)
             # collect experience
@@ -170,21 +184,26 @@ def train(arglist):
                 loss = agent.update(trainers, train_step)
 
             # save model, display training output
-            if (done or terminal) and (len(episode_rewards) % arglist.save_rate == 0):
-                U.save_state(arglist.save_dir, saver=saver)
-                # print statement depends on whether or not there are adversaries
-                if num_adversaries == 0:
-                    print("steps: {}, episodes: {}, mean episode reward: {}, time: {}".format(
-                        train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate:]), round(time.time()-t_start, 3)))
-                else:
-                    print("steps: {}, episodes: {}, mean episode reward: {}, agent episode reward: {}, time: {}".format(
-                        train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate:]),
-                        [np.mean(rew[-arglist.save_rate:]) for rew in agent_rewards], round(time.time()-t_start, 3)))
-                t_start = time.time()
-                # Keep track of final episode reward
-                final_ep_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
-                for rew in agent_rewards:
-                    final_ep_ag_rewards.append(np.mean(rew[-arglist.save_rate:]))
+            if (done or terminal):
+
+                writer.add_scalar('reward/mean/0', np.mean(episode_rewards[-arglist.save_rate-1:-1]), len(episode_rewards))
+                writer.add_scalar('reward/raw/0', episode_rewards[-2], len(episode_rewards))
+
+                if (len(episode_rewards) % arglist.save_rate == 0):
+                    U.save_state(arglist.save_dir, saver=saver)
+                    # print statement depends on whether or not there are adversaries
+                    if num_adversaries == 0:
+                        print("steps: {}, episodes: {}, mean episode reward: {}, time: {}".format(
+                            train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate:]), round(time.time()-t_start, 3)))
+                    else:
+                        print("steps: {}, episodes: {}, mean episode reward: {}, agent episode reward: {}, time: {}".format(
+                            train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate:]),
+                            [np.mean(rew[-arglist.save_rate:]) for rew in agent_rewards], round(time.time()-t_start, 3)))
+                    t_start = time.time()
+                    # Keep track of final episode reward
+                    final_ep_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
+                    for rew in agent_rewards:
+                        final_ep_ag_rewards.append(np.mean(rew[-arglist.save_rate:]))
 
             # saves final episode reward for plotting training curve later
             if len(episode_rewards) > arglist.num_episodes:
